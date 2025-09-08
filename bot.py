@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, time as dtime
 import os
 
 # ================== SOZLAMALAR ==================
-TOKEN = "8305786670:AAHTVPYg6krEnOGi2wEX2yCovjH7R3lIpxM"    # BotFather token
+TOKEN = "8305786670:AAGRSdnNoDdG6o5wPKXrv-JD2RmfqJ2hHXE"    # BotFather token
 DRIVERS_CHAT_ID  = -4917715168         # Haydovchilar guruhi ID (buyurtmalar)
 RATINGS_CHAT_ID  = -4861064259         # 📊 Baholar log guruhi
 PAYMENTS_CHAT_ID = -4925556700         # 💳 Cheklar guruhi
