@@ -5,7 +5,7 @@ from aiogram.types import (
     FSInputFile
 )
 
-# CopyTextButton yangi Telegram Bot API’da bor. Aiogram/klient versiyasiga qarab fallback ishlatamiz.
+# CopyTextButton: ba'zi aiogram versiyalarida mavjud
 try:
     from aiogram.types import CopyTextButton
     SUPPORTS_COPY_TEXT = True
@@ -341,49 +341,14 @@ async def after_phone_collected(uid: int, message: types.Message):
     car_plate = data.get("car_plate", "—")
     phone = data.get("phone", "—")
 
+    # Profilni yangilaymiz
     if uid in user_profiles:
         user_profiles[uid]["phone"] = phone
         user_profiles[uid]["name"] = user_profiles[uid].get("name") or name
     else:
         user_profiles[uid] = {"name": name, "phone": phone}
 
-    price_txt = f"{SUBSCRIPTION_PRICE:,}".replace(",", " ")
-    pay_text = (
-        f"💳 <b>Obuna to‘lovi:</b> <code>{price_txt} so‘m</code> (1 oy)\n"
-        f"🧾 <b>Karta:</b> <code>{CARD_NUMBER}</code>\n"
-        f"👤 Karta egasi: <b>{CARD_HOLDER}</b>\n\n"
-        f"✅ To‘lovni amalga oshirgach, <b>chek rasm</b>ini yuboring (screenshot ham bo‘ladi).\n"
-        f"⚠️ <b>Ogohlantirish:</b> soxtalashtirilgan chek yuborgan shaxsga "
-        f"<b>jinoyiy javobgarlik</b> qo‘llanilishi mumkin."
-    )
-
-    # === KARTANI NUSXALASH TUGMASI: eng xavfsiz usul bilan ===
-    ikb = None
-    try:
-        # Yangi klientlar: bevosita string berish
-        _ = InlineKeyboardButton(text="test", copy_text="x")  # sinov
-        ikb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📋 Karta raqamini nusxalash", copy_text=CARD_NUMBER)],
-            [InlineKeyboardButton(text="📤 Chekni yuborish", callback_data="send_check")]
-        ])
-    except TypeError:
-        # Ba'zi buildlarda CopyTextButton mavjud bo'lishi mumkin
-        try:
-            if SUPPORTS_COPY_TEXT:
-                ikb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="📋 Karta raqamini nusxalash", copy_text=CopyTextButton(text=CARD_NUMBER))],
-                    [InlineKeyboardButton(text="📤 Chekni yuborish", callback_data="send_check")]
-                ])
-            else:
-                raise RuntimeError("copy_text not supported")
-        except Exception:
-            # Fallback: klaviaturasiz ham ma'lumot chiqadi
-            pay_text += f"\n\nℹ️ Nusxalash tugmasi qo‘llab-quvvatlanmadi. Karta raqami: <code>{CARD_NUMBER}</code> — ustiga bosib ushlab turib nusxalang."
-            ikb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📤 Chekni yuborish", callback_data="send_check")]
-            ])
-
-    # Avval ma'lumotlar
+    # 1) Avval ALOHIDA xabar: foydalanuvchi ma'lumotlari
     await message.answer(
         "Ma’lumotlaringiz qabul qilindi ✅\n\n"
         f"👤 <b>F.I.Sh:</b> {name}\n"
@@ -393,8 +358,46 @@ async def after_phone_collected(uid: int, message: types.Message):
         parse_mode="HTML"
     )
 
-    # So‘ng to‘lov bloki (ikb bo‘lishi shart emas)
-    await message.answer(pay_text, parse_mode="HTML", reply_markup=ikb)
+    # 2) ALOHIDA xabar: to‘lov ma'lumotlari (doim ko‘rinadi)
+    price_txt = f"{SUBSCRIPTION_PRICE:,}".replace(",", " ")
+    pay_text = (
+        f"💳 <b>Obuna to‘lovi:</b> <code>{price_txt} so‘m</code> (1 oy)\n"
+        f"🧾 <b>Karta:</b> <code>{CARD_NUMBER}</code>\n"
+        f"👤 Karta egasi: <b>{CARD_HOLDER}</b>\n\n"
+        f"✅ To‘lovni amalga oshirgach, <b>chek rasm</b>ini yuboring (screenshot ham bo‘ladi).\n"
+        f"⚠️ <b>Ogohlantirish:</b> soxtalashtirilgan chek yuborgan shaxsga "
+        f"<b>jinoyiy javobgarlik</b> qo‘llanilishi mumkin."
+    )
+    await message.answer(pay_text, parse_mode="HTML")
+
+    # 3) ALOHIDA xabar: Nusxalash tugmasi (agar qo‘llansa)
+    try:
+        # Yangi API: InlineKeyboardButton(copy_text=...) sinovi (ko‘p hollarda TypeError beradi — ushlaymiz)
+        _ = InlineKeyboardButton(text="test", copy_text="x")
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="📋 Karta raqamini nusxalash", copy_text=CARD_NUMBER)],
+                [InlineKeyboardButton(text="📤 Chekni yuborish", callback_data="send_check")]
+            ]
+        )
+        await message.answer("Quyidagi tugma orqali karta raqamini tez nusxalashingiz mumkin 👇", reply_markup=kb)
+    except TypeError:
+        # Ba'zi versiyalarda CopyTextButton mavjud
+        try:
+            if SUPPORTS_COPY_TEXT:
+                kb = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="📋 Karta raqamini nusxalash", copy_text=CopyTextButton(text=CARD_NUMBER))],
+                        [InlineKeyboardButton(text="📤 Chekni yuborish", callback_data="send_check")]
+                    ]
+                )
+                await message.answer("Quyidagi tugma orqali karta raqamini tez nusxalashingiz mumkin 👇", reply_markup=kb)
+            else:
+                await message.answer("ℹ️ Agar nusxalash tugmasi chiqmasa, karta raqami ustiga bosib ushlab turib nusxalang.")
+        except Exception:
+            await message.answer("ℹ️ Nusxalash tugmasi qo‘llab-quvvatlanmadi. Raqamni qo‘lda nusxalashingiz mumkin.")
+    except Exception:
+        pass
 
     driver_onboarding[uid]["stage"] = "wait_check"
 
@@ -810,7 +813,7 @@ async def collect_flow(message: types.Message):
         )
         return
 
-    # 3) Mashina → From → To → Vaqt (har ikki yo‘nalish uchun umumiy, lekin matnlar biroz farq qiladi)
+    # 3) Mashina → From → To → Vaqt
     if stage == "vehicle":
         d["vehicle"] = text if text else "Noma'lum"
         d["stage"] = "from"
@@ -1278,4 +1281,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
