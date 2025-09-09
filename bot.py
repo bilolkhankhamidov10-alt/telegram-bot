@@ -357,29 +357,68 @@ async def _send_trial_invite(uid: int):
 
 async def trial_watcher():
     """
-    Har soatda trial muddati tugaganlarni (to‘lov qilmagan bo‘lsa) guruhdan chiqaradi.
+    Har soatda trial muddati tugaganlarni (to‘lov qilmagan bo‘lsa) guruhdan chiqaradi
+    va to‘lov ma'lumotlari bilan DM yuboradi.
     """
     while True:
         try:
             now = datetime.now()
             for uid, info in list(trial_members.items()):
+                # To'lov qilganlar kuzatuvdan chiqariladi
                 if subscriptions.get(uid, {}).get("active"):
                     trial_members.pop(uid, None)
                     continue
+
                 exp = info.get("expires_at")
                 if exp and now >= exp:
+                    # Guruhdan chiqarib (rejoin ruxsat) qo'yamiz
                     try:
                         await bot.ban_chat_member(DRIVERS_CHAT_ID, uid)
                         await bot.unban_chat_member(DRIVERS_CHAT_ID, uid)
                     except Exception:
                         pass
+
+                    # To'lov ma'lumoti + narx
+                    price_txt = f"{SUBSCRIPTION_PRICE:,}".replace(",", " ")
+                    pay_text = (
+                        "⛔️ <b>7 kunlik bepul sinov muddati tugadi.</b>\n\n"
+                        f"💳 <b>Obuna to‘lovi:</b> <code>{price_txt} so‘m</code> (1 oy)\n"
+                        f"🧾 <b>Karta:</b> <code>{CARD_NUMBER}</code>\n"
+                        f"👤 Karta egasi: <b>{CARD_HOLDER}</b>\n\n"
+                        "✅ To‘lovni amalga oshirgach, <b>chek rasm</b>ini yuboring.\n"
+                        "Tasdiqlangach, sizga <b>Haydovchilar guruhi</b>ga qayta qo‘shilish havolasini yuboramiz."
+                    )
+
+                    # Inline tugmalar: karta nusxalash (agar qo'llasa) va "Chekni yuborish"
+                    if SUPPORTS_COPY_TEXT:
+                        ikb = InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(
+                                text="📋 Karta raqamini nusxalash",
+                                copy_text=CopyTextButton(text=CARD_NUMBER)
+                            )],
+                            [InlineKeyboardButton(text="📤 Chekni yuborish", callback_data="send_check")]
+                        ])
+                    else:
+                        ikb = InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="📤 Chekni yuborish", callback_data="send_check")]
+                        ])
+
+                    # "Chekni yuborish" callback'i ishlashi uchun stage'ni tayyorlab qo'yamiz
+                    driver_onboarding[uid] = driver_onboarding.get(uid, {})
+                    driver_onboarding[uid]["stage"] = "wait_check"
+
                     try:
-                        await bot.send_message(uid, "⛔️ 7 kunlik sinov muddati tugadi. Davom ettirish uchun obuna to‘lovini amalga oshiring.")
+                        await bot.send_message(uid, pay_text, parse_mode="HTML", reply_markup=ikb)
                     except Exception:
                         pass
+
+                    # Trial ro'yxatidan o'chiramiz
                     trial_members.pop(uid, None)
+
         except Exception:
+            # watchdog yiqilmasin
             pass
+
         await asyncio.sleep(3600)  # 1 soatda bir tekshiradi
 
 async def after_phone_collected(uid: int, message: types.Message):
