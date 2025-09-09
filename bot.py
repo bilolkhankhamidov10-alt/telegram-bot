@@ -59,6 +59,10 @@ CONTACT_BTN = "📞 Biz bilan bog'lanish"
 CONTACT_PHONE = "+998503307707"
 CONTACT_TG    = "EltiBer_admin"
 
+# Yangi: Buyurtma turi tugmalari
+LOCAL_SCOPE     = "🏙️ Qo'qon ichida"
+INTERCITY_SCOPE = "🛣️ Qo'qondan viloyatga"
+
 # ================== KLAVIATURALAR ==================
 def rows_from_list(items, per_row=3):
     return [list(map(lambda t: KeyboardButton(text=t), items[i:i+per_row])) for i in range(0, len(items), per_row)]
@@ -111,6 +115,21 @@ def order_keyboard():
 
 def when_keyboard():
     return keyboard_with_back_cancel([HOZIR, BOSHQA], per_row=2, show_back=True)
+
+# Viloyatlar ro'yxati (intercity uchun)
+REGIONS = [
+    "Andijon", "Buxoro", "Farg'ona", "Jizzax", "Namangan", "Navoiy",
+    "Qashqadaryo", "Qoraqalpog'iston", "Samarqand", "Sirdaryo",
+    "Surxondaryo", "Toshkent viloyati", "Toshkent shahri"
+]
+
+def scope_keyboard():
+    # Start: Buyurtma turi
+    return keyboard_with_back_cancel([LOCAL_SCOPE, INTERCITY_SCOPE], per_row=1, show_back=False)
+
+def region_keyboard():
+    # Qo'qondan viloyatga: qaysi viloyat?
+    return keyboard_with_back_cancel(REGIONS, per_row=3, show_back=True)
 
 # ================== START ==================
 @dp.message(CommandStart())
@@ -187,10 +206,11 @@ async def prompt_order_flow(message: types.Message):
         await message.answer("Iltimos, telefon raqamingizni yuboring 📞", reply_markup=contact_keyboard())
         return
 
-    drafts[uid] = {"stage": "vehicle", "vehicle": None, "from": None, "to": None, "when": None}
+    # Yangi oqim: avval buyurtma turi (scope)
+    drafts[uid] = {"stage": "scope", "scope": None, "region": None, "vehicle": None, "from": None, "to": None, "when": None}
     await message.answer(
-        "🚚 Qanday yuk mashinasi kerak?\nQuyidagidan tanlang yoki o‘zingiz yozing:",
-        reply_markup=vehicle_keyboard()
+        "🗺️ Buyurtma turini tanlang:",
+        reply_markup=scope_keyboard()
     )
 
 @dp.message(F.text == CANCEL)
@@ -652,6 +672,18 @@ async def back_flow(message: types.Message):
         await message.answer("Asosiy menyu", reply_markup=order_keyboard()); return
 
     stage = d["stage"]
+
+    # Yangi bosqichlar
+    if stage == "scope":
+        # scope bosqichida ortga -> asosiy menyu
+        drafts.pop(uid, None)
+        await message.answer("Asosiy menyu", reply_markup=order_keyboard()); return
+
+    if stage == "region":
+        d["stage"] = "scope"
+        await message.answer("🗺️ Buyurtma turini tanlang:", reply_markup=scope_keyboard()); return
+
+    # Mavjud bosqichlar
     if stage == "vehicle":
         await message.answer("🚚 Qanday yuk mashinasi kerak?\nQuyidagidan tanlang yoki o‘zingiz yozing:", reply_markup=vehicle_keyboard()); return
     if stage == "from":
@@ -683,6 +715,34 @@ async def collect_flow(message: types.Message):
     if uid not in drafts: return
     d = drafts[uid]; stage = d["stage"]; text = (message.text or "").strip()
 
+    # 0) TURI (scope) -- Qo'qon ichida / Qo'qondan viloyatga
+    if stage == "scope":
+        if text == LOCAL_SCOPE:
+            d["scope"] = "local"
+            d["stage"] = "vehicle"
+            await message.answer("🚚 Qanday yuk mashinasi kerak?\nQuyidagidan tanlang yoki o‘zingiz yozing:", reply_markup=vehicle_keyboard())
+            return
+        elif text == INTERCITY_SCOPE:
+            d["scope"] = "intercity"
+            d["stage"] = "region"
+            await message.answer("🌍 Qaysi viloyatga?\nRo‘yxatdan tanlang:", reply_markup=region_keyboard())
+            return
+        else:
+            await message.answer("Iltimos, tugmalardan birini tanlang:", reply_markup=scope_keyboard())
+            return
+
+    # 1) VILOYAT tanlash (faqat intercity)
+    if stage == "region":
+        if text in REGIONS:
+            d["region"] = text
+            d["stage"] = "vehicle"
+            await message.answer("🚚 Qanday yuk mashinasi kerak?\nQuyidagidan tanlang yoki o‘zingiz yozing:", reply_markup=vehicle_keyboard())
+            return
+        else:
+            await message.answer("Iltimos, ro‘yxatdan viloyatni tanlang:", reply_markup=region_keyboard())
+            return
+
+    # 2) Mavjud oqim
     if stage == "vehicle":
         d["vehicle"] = text if text else "Noma'lum"
         d["stage"] = "from"
@@ -734,6 +794,12 @@ def group_post_text(customer_id: int, order: dict, status_note: str | None = Non
         f"📦 Yangi buyurtma!\n"
         f"👤 Mijoz: {customer_name}\n"
         f"🚚 Mashina: {order['vehicle']}\n"
+    )
+    # Qo'shimcha: intercity bo'lsa viloyatni ko'rsatamiz
+    if order.get("scope") == "intercity":
+        base += f"🌍 Viloyat: {order.get('region', '—')}\n"
+
+    base += (
         f"➡️ Yo‘nalish:\n"
         f"   • Qayerdan: {order['from']}\n"
         f"   • Qayerga: {order['to']}\n"
@@ -793,7 +859,14 @@ def schedule_driver_reminders(customer_id: int):
 # ================== GURUHGA YUBORISH + MIJOZGA BEKOR TUGMASI ==================
 async def finalize_and_send(message: types.Message, d: dict):
     uid = message.from_user.id
-    order_data = {"vehicle": d["vehicle"], "from": d["from"], "to": d["to"], "when": d["when"]}
+    order_data = {
+        "scope": d.get("scope"),
+        "region": d.get("region"),
+        "vehicle": d["vehicle"],
+        "from": d["from"],
+        "to": d["to"],
+        "when": d["when"],
+    }
     ikb_group = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❗️ Qabul qilish", callback_data=f"accept_{uid}")]
     ])
