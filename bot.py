@@ -298,14 +298,32 @@ async def onboarding_or_order_text(message: types.Message):
             driver_onboarding[uid]["stage"] = "phone"
             prof_phone = user_profiles.get(uid, {}).get("phone")
             hint = f"\n\nBizdagi saqlangan raqam: <b>{phone_display(prof_phone)}</b>" if prof_phone else ""
+
+            kb = share_phone_keyboard()
+            if prof_phone:
+                # Saqlangan raqam tugmasini eng yuqoriga qo'yamiz
+                kb.keyboard.insert(0, [KeyboardButton(text="☑️ Saqlangan raqamdan foydalanish")])
+
             await message.answer(
                 "📞 Kontakt raqamingizni yuboring.\nRaqamni yozishingiz yoki pastdagi tugma orqali ulashishingiz mumkin." + hint,
                 parse_mode="HTML",
-                reply_markup=share_phone_keyboard()
+                reply_markup=kb
             )
             return
 
         if st == "phone":
+            # Saqlangan raqamdan foydalanish tugmasi
+            if txt == "☑️ Saqlangan raqamdan foydalanish":
+                prof_phone = user_profiles.get(uid, {}).get("phone")
+                if prof_phone:
+                    driver_onboarding[uid]["phone"] = prof_phone if prof_phone.startswith("+") else f"+{prof_phone}"
+                    await after_phone_collected(uid, message)
+                    return
+                else:
+                    await message.answer("Saqlangan raqam topilmadi. Iltimos, raqam yuboring.", reply_markup=share_phone_keyboard())
+                    return
+
+            # Aks holda foydalanuvchi raqam yozadi
             phone = txt
             driver_onboarding[uid]["phone"] = phone if phone.startswith("+") else f"+{phone}"
             await after_phone_collected(uid, message)
@@ -339,28 +357,33 @@ async def after_phone_collected(uid: int, message: types.Message):
         f"<b>jinoyiy javobgarlik</b> qo‘llanilishi mumkin."
     )
 
-    # 1-bosishda nusxalash: yangi Telegram klientlarda InlineKeyboardButton(copy_text=...) ishlaydi.
-    # Ba'zilarida TypeError berishi mumkin — shunda CopyTextButton yoki oddiy fallback ishlatamiz.
+    # === KARTANI NUSXALASH TUGMASI: eng xavfsiz usul bilan ===
+    ikb = None
     try:
+        # Yangi klientlar: bevosita string berish
         _ = InlineKeyboardButton(text="test", copy_text="x")  # sinov
         ikb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📋 Karta raqamini nusxalash", copy_text=CARD_NUMBER)],
             [InlineKeyboardButton(text="📤 Chekni yuborish", callback_data="send_check")]
         ])
     except TypeError:
-        if SUPPORTS_COPY_TEXT:
-            # Eski aiogram buildlarida CopyTextButton bo'lishi mumkin
-            ikb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📋 Karta raqamini nusxalash", copy_text=CopyTextButton(text=CARD_NUMBER))],
-                [InlineKeyboardButton(text="📤 Chekni yuborish", callback_data="send_check")]
-            ])
-        else:
-            # Fallback: nusxalash tugmasi o‘rniga oddiy matnli ko‘rsatma
+        # Ba'zi buildlarda CopyTextButton mavjud bo'lishi mumkin
+        try:
+            if SUPPORTS_COPY_TEXT:
+                ikb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📋 Karta raqamini nusxalash", copy_text=CopyTextButton(text=CARD_NUMBER))],
+                    [InlineKeyboardButton(text="📤 Chekni yuborish", callback_data="send_check")]
+                ])
+            else:
+                raise RuntimeError("copy_text not supported")
+        except Exception:
+            # Fallback: klaviaturasiz ham ma'lumot chiqadi
             pay_text += f"\n\nℹ️ Nusxalash tugmasi qo‘llab-quvvatlanmadi. Karta raqami: <code>{CARD_NUMBER}</code> — ustiga bosib ushlab turib nusxalang."
             ikb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📤 Chekni yuborish", callback_data="send_check")]
             ])
 
+    # Avval ma'lumotlar
     await message.answer(
         "Ma’lumotlaringiz qabul qilindi ✅\n\n"
         f"👤 <b>F.I.Sh:</b> {name}\n"
@@ -369,7 +392,10 @@ async def after_phone_collected(uid: int, message: types.Message):
         f"📞 <b>Telefon:</b> {phone}",
         parse_mode="HTML"
     )
+
+    # So‘ng to‘lov bloki (ikb bo‘lishi shart emas)
     await message.answer(pay_text, parse_mode="HTML", reply_markup=ikb)
+
     driver_onboarding[uid]["stage"] = "wait_check"
 
 @dp.callback_query(F.data == "send_check")
@@ -645,7 +671,7 @@ async def admin_confirm_payment(message: types.Message):
         pending_invites[driver_id] = {"msg_id": dm.message_id, "link": invite_link}
         await message.reply(f"✅ Silka yuborildi: <code>{driver_id}</code>", parse_mode="HTML")
     except Exception:
-        await message.reply("❌ Haydovchiga DM yuborib bo‘lmadi (botga /start yozmagan bo‘lishi mumkin).")
+        await message.reply("❌ Haydovchiga DM yuborib bo‘lmaydi (botga /start yozmagan bo‘lishi mumkin).")
 
 # ================== CHAT MEMBER UPDATE: guruhga qo‘shilganda DM’ni o‘chirish ==================
 @dp.chat_member()
@@ -710,7 +736,6 @@ async def back_flow(message: types.Message):
     if stage == "vehicle":
         await message.answer("🚚 Qanday yuk mashinasi kerak?\nQuyidagidan tanlang yoki o‘zingiz yozing:", reply_markup=vehicle_keyboard()); return
     if stage == "from":
-        # region/city ga qarab ortga yo'nalish
         d["stage"] = "vehicle"
         await message.answer("🚚 Qanday yuk mashinasi kerak?\nQuyidagidan tanlang yoki o‘zingiz yozing:", reply_markup=vehicle_keyboard()); return
     if stage == "to":
@@ -1253,3 +1278,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
