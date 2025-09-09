@@ -226,7 +226,6 @@ async def haydovchi_bolish(message: types.Message):
         "1) Buyurtma guruhdan “Qabul qilish” orqali olinadi; <b>narx/vaqt/manzil</b> — haydovchi ↔ mijoz o‘rtasida <b>bevosita</b> kelishiladi.\n"
         "2) <b>EltiBer ma’muriyati</b> narx, to‘lov va yetkazish jarayoniga <b>aralashmaydi</b> va <b>javobgar emas</b>.\n"
         "3) Borolmasangiz — darhol mijozga xabar bering va bekor qiling.\n\n"
-        "⛔️ <b>Ogohlantirish:</b> soxtalashtirilgan chek yuborgan shaxsga nisbatan <b>jinoyiy javobgarlik</b> qo‘llanilishi mumkin."
     )
     ikb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Shartlarga roziman", callback_data="driver_agree")]
