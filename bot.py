@@ -47,6 +47,12 @@ orders = {}             # {customer_id: {...}}
 driver_links = {}
 pending_invites = {}    # {driver_id: {"msg_id":..., "link":...}}
 
+# ======= FREE TRIAL (7 kun bepul) — QO'SHIMCHA =======
+FREE_TRIAL_ENABLED = True
+FREE_TRIAL_DAYS = 7
+subscriptions = {}   # {driver_id: {"active": True}}
+trial_members = {}   # {driver_id: {"expires_at": datetime}}
+
 # ================== LABELLAR ==================
 CANCEL = "❌ Bekor qilish"
 BACK   = "◀️ Ortga"
@@ -302,6 +308,80 @@ async def onboarding_or_order_text(message: types.Message):
     # Onboarding bo'lmasa — buyurtma oqimi
     await collect_flow(message)
 
+# ================== YORDAMCHI (trial) — QO'SHIMCHA ==================
+async def _send_trial_invite(uid: int):
+    """
+    7 kunlik bepul sinov uchun bitta martalik invite yaratadi va haydovchiga yuboradi.
+    """
+    try:
+        expires_at = datetime.now() + timedelta(days=FREE_TRIAL_DAYS)
+        invite = await bot.create_chat_invite_link(
+            chat_id=DRIVERS_CHAT_ID,
+            name=f"trial-{uid}",
+            member_limit=1,
+            expire_date=int(expires_at.timestamp())
+        )
+        invite_link = invite.invite_link
+    except Exception as e:
+        for admin in ADMIN_IDS:
+            try:
+                await bot.send_message(admin, f"❌ Trial silka yaratilmadi (user {uid}): {e}")
+            except Exception:
+                pass
+        try:
+            await bot.send_message(uid, "❌ Kechirasiz, hozircha trial havola yaratilmayapti. Iltimos, admin bilan bog‘laning.")
+        except Exception:
+            pass
+        return
+
+    trial_members[uid] = {"expires_at": expires_at}
+
+    ikb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👥 Haydovchilar guruhiga qo‘shilish (7 kun bepul)", url=invite_link)]
+    ])
+    try:
+        dm = await bot.send_message(
+            chat_id=uid,
+            text=(
+                f"🎁 <b>7 kunlik bepul sinov</b> faollashtirildi!\n\n"
+                f"⏳ Amal qilish muddati: <b>{expires_at.strftime('%Y-%m-%d %H:%M')}</b> gacha.\n"
+                "Quyidagi tugma orqali guruhga qo‘shiling. Sinov tugaganda agar obuna bo‘lmasangiz, guruhdan chiqarib qo‘yiladi."
+            ),
+            parse_mode="HTML",
+            reply_markup=ikb,
+            disable_web_page_preview=True
+        )
+        pending_invites[uid] = {"msg_id": dm.message_id, "link": invite_link}
+    except Exception:
+        pass
+
+async def trial_watcher():
+    """
+    Har soatda trial muddati tugaganlarni (to‘lov qilmagan bo‘lsa) guruhdan chiqaradi.
+    """
+    while True:
+        try:
+            now = datetime.now()
+            for uid, info in list(trial_members.items()):
+                if subscriptions.get(uid, {}).get("active"):
+                    trial_members.pop(uid, None)
+                    continue
+                exp = info.get("expires_at")
+                if exp and now >= exp:
+                    try:
+                        await bot.ban_chat_member(DRIVERS_CHAT_ID, uid)
+                        await bot.unban_chat_member(DRIVERS_CHAT_ID, uid)
+                    except Exception:
+                        pass
+                    try:
+                        await bot.send_message(uid, "⛔️ 7 kunlik sinov muddati tugadi. Davom ettirish uchun obuna to‘lovini amalga oshiring.")
+                    except Exception:
+                        pass
+                    trial_members.pop(uid, None)
+        except Exception:
+            pass
+        await asyncio.sleep(3600)  # 1 soatda bir tekshiradi
+
 async def after_phone_collected(uid: int, message: types.Message):
     data = driver_onboarding.get(uid, {})
     name = data.get("name", "—")
@@ -315,6 +395,21 @@ async def after_phone_collected(uid: int, message: types.Message):
     else:
         user_profiles[uid] = {"name": name, "phone": phone}
 
+    # >>> Trial yoqilgan bo‘lsa — darhol 7 kunlik havola yuboramiz (mavjud oqimni o‘chirmasdan).
+    if FREE_TRIAL_ENABLED and not subscriptions.get(uid, {}).get("active"):
+        try:
+            await message.answer(
+                "🎁 Siz uchun <b>7 kunlik bepul sinov</b> ishga tushiriladi.\n"
+                "Bir zumda havolani yuboraman...",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        await _send_trial_invite(uid)
+        driver_onboarding.pop(uid, None)
+        return
+
+    # ======== Quyidagisi — sizning asl to‘lov oqimingiz (o‘zgartirilmagan) ========
     price_txt = f"{SUBSCRIPTION_PRICE:,}".replace(",", " ")
     pay_text = (
         f"💳 <b>Obuna to‘lovi:</b> <code>{price_txt} so‘m</code> (1 oy)\n"
@@ -325,7 +420,6 @@ async def after_phone_collected(uid: int, message: types.Message):
         f"<b>jinoyiy javobgarlik</b> qo‘llanilishi mumkin."
     )
 
-    # 1-tap copy tugmasi (mavjud bo‘lsa) + fallback
     if SUPPORTS_COPY_TEXT:
         ikb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
@@ -387,11 +481,6 @@ async def _build_check_caption(uid: int, data: dict) -> str:
     return cap
 
 async def _send_check_to_payments(uid: int, caption: str, file_id: str, as_photo: bool) -> bool:
-    """
-    Cheklar guruhiga rasm/hujjatni yuboradi, inline 'Tasdiqlash/Rad etish' tugmalari bilan.
-    Agar rasmga huquq bo‘lmasa -> document sifatida urinadi.
-    Bo‘lmasa admin(lar)ga DM orqali ogohlantiradi.
-    """
     kb = _make_payment_kb(uid)
     try:
         if as_photo:
@@ -498,6 +587,9 @@ async def _send_driver_invite_and_mark(callback: types.CallbackQuery, driver_id:
             disable_web_page_preview=True
         )
         pending_invites[driver_id] = {"msg_id": dm.message_id, "link": invite_link}
+        # >>> To'lov tasdiqlandi: obuna faollashdi (trial bo'lsa ham bekor qilamiz)
+        subscriptions[driver_id] = {"active": True}
+        trial_members.pop(driver_id, None)
     except Exception as e:
         await callback.answer("❌ Haydovchiga DM yuborilmadi (botga /start yozmagan bo‘lishi mumkin).", show_alert=True)
         return
@@ -616,6 +708,9 @@ async def admin_confirm_payment(message: types.Message):
             disable_web_page_preview=True
         )
         pending_invites[driver_id] = {"msg_id": dm.message_id, "link": invite_link}
+        # >>> Qo'lda tasdiqlashda ham obunani faollashtiramiz
+        subscriptions[driver_id] = {"active": True}
+        trial_members.pop(driver_id, None)
         await message.reply(f"✅ Silka yuborildi: <code>{driver_id}</code>", parse_mode="HTML")
     except Exception:
         await message.reply("❌ Haydovchiga DM yuborib bo‘lmadi (botga /start yozmagan bo‘lishi mumkin).")
@@ -675,7 +770,6 @@ async def back_flow(message: types.Message):
 
     # Yangi bosqichlar
     if stage == "scope":
-        # scope bosqichida ortga -> asosiy menyu
         drafts.pop(uid, None)
         await message.answer("Asosiy menyu", reply_markup=order_keyboard()); return
 
@@ -790,13 +884,12 @@ def phone_display(p: str) -> str:
 
 def _route_label(order: dict) -> str:
     """
-    Guruh posti uchun 'Yo'nalish turi' qiymatini hosil qiladi.
-    intercity -> "Qo'qon - <Viloyat/Qayer>"
+    Guruh posti uchun 'Yo'nalish turi' qiymati.
+    intercity -> "Qo'qon - <Viloyat>"
     local     -> "Qo'qon ichida"
     """
     if order.get("scope") == "intercity":
         dest = order.get("region", "—")
-        # kichik normalizatsiya: "Toshkent viloyati"/"Toshkent shahri" -> "Toshkent"
         if dest in ("Toshkent viloyati", "Toshkent shahri"):
             dest = "Toshkent"
         return f"Qo'qon - {dest}"
@@ -1115,6 +1208,10 @@ async def test_payments_photo_cmd(message: types.Message):
 async def main():
     print("Bot ishga tushmoqda...")
     await bot.delete_webhook(drop_pending_updates=True)
+
+    # >>> Trial nazoratchisini fon rejimda ishga tushiramiz
+    asyncio.create_task(trial_watcher())
+
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":
