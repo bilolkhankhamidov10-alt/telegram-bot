@@ -788,18 +788,28 @@ def phone_display(p: str) -> str:
     if not p: return "—"
     p = str(p); return p if p.startswith("+") else f"+{p}"
 
+def _route_label(order: dict) -> str:
+    """
+    Guruh posti uchun 'Yo'nalish turi' qiymatini hosil qiladi.
+    intercity -> "Qo'qon - <Viloyat/Qayer>"
+    local     -> "Qo'qon ichida"
+    """
+    if order.get("scope") == "intercity":
+        dest = order.get("region", "—")
+        # kichik normalizatsiya: "Toshkent viloyati"/"Toshkent shahri" -> "Toshkent"
+        if dest in ("Toshkent viloyati", "Toshkent shahri"):
+            dest = "Toshkent"
+        return f"Qo'qon - {dest}"
+    return "Qo'qon ichida"
+
 def group_post_text(customer_id: int, order: dict, status_note: str | None = None) -> str:
     customer_name = user_profiles.get(customer_id, {}).get("name", "Mijoz")
+    route_type = _route_label(order)
     base = (
         f"📦 Yangi buyurtma!\n"
         f"👤 Mijoz: {customer_name}\n"
         f"🚚 Mashina: {order['vehicle']}\n"
-    )
-    # Qo'shimcha: intercity bo'lsa viloyatni ko'rsatamiz
-    if order.get("scope") == "intercity":
-        base += f"🌍 Viloyat: {order.get('region', '—')}\n"
-
-    base += (
+        f"🧭 Yo'nalish turi: {route_type}\n"
         f"➡️ Yo‘nalish:\n"
         f"   • Qayerdan: {order['from']}\n"
         f"   • Qayerga: {order['to']}\n"
