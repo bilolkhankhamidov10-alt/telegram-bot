@@ -956,8 +956,9 @@ async def collect_flow(message: types.Message):
     # ✅ Tasdiqlashga o‘tkazish (Hozir/Boshqa yoki HH:MM kiritilganda)
     if stage == "when_select":
         if text == HOZIR:
-            d["when"] = datetime.now() + timedelte(hours=5).strftime("%H:%M"); 
-            await finalize_and_send(message, d);
+            d["when"] = HOZIR
+            d["stage"] = "confirm"
+            await _ask_confirm(message, d)
             return
         if text == BOSHQA:
             d["stage"] = "when_input"
