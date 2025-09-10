@@ -1116,7 +1116,7 @@ async def finalize_and_send(message: types.Message, d: dict):
         "cust_rating_msg_id": None, "rating": None, "reminder_tasks": []
     }
     ikb_cust = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Buyurtmani bekor qilish", callback_data=f"cancel_{customer_id}")]
+        [InlineKeyboardButton(text="❌ Buyurtmani bekor qilish", callback_data=f"cancel_{uid}")]
     ])
     await message.answer("✅ Buyurtma haydovchilarga yuborildi.\nKerak bo‘lsa bekor qilishingiz mumkin.", reply_markup=ikb_cust)
     await message.answer("Asosiy menyu", reply_markup=order_keyboard())
