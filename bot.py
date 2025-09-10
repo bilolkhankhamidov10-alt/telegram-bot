@@ -22,8 +22,8 @@ import csv
 # ================== SOZLAMALAR ==================
 TOKEN = "8305786670:AAGRSdnNoDdG6o5wPKXrv-JD2RmfqJ2hHXE"    # BotFather token
 DRIVERS_CHAT_ID  = -1002978372872         # Haydovchilar guruhi ID (buyurtmalar)
-RATINGS_CHAT_ID  = -4861064259         # 📊 Baholar log guruhi
-PAYMENTS_CHAT_ID = -4925556700         # 💳 Cheklar guruhi
+RATINGS_CHAT_ID  = -4861064259            # 📊 Baholar log guruhi
+PAYMENTS_CHAT_ID = -4925556700            # 💳 Cheklar guruhi
 
 ADMIN_IDS = [6948926876]
 
@@ -875,6 +875,11 @@ async def back_flow(message: types.Message):
         d["stage"] = "scope"
         await message.answer("🗺️ Buyurtma turini tanlang:", reply_markup=scope_keyboard()); return
 
+    # ✅ Tasdiqlashdan ortga — vaqt tanlashga qaytaramiz
+    if stage == "confirm":
+        d["stage"] = "when_select"
+        await message.answer("🕒 Qaysi **vaqtga** kerak?\nTugmalardan tanlang yoki `HH:MM` yozing.", reply_markup=when_keyboard()); return
+
     # Mavjud bosqichlar
     if stage == "vehicle":
         await message.answer("🚚 Qanday yuk mashinasi kerak?\nQuyidagidan tanlang yoki o‘zingiz yozing:", reply_markup=vehicle_keyboard()); return
@@ -948,19 +953,29 @@ async def collect_flow(message: types.Message):
         d["to"] = text; d["stage"] = "when_select"
         await message.answer("🕒 Qaysi **vaqtga** kerak?\nTugmalardan tanlang yoki `HH:MM` yozing.", reply_markup=when_keyboard()); return
 
+    # ✅ Tasdiqlashga o‘tkazish (Hozir/Boshqa yoki HH:MM kiritilganda)
     if stage == "when_select":
         if text == HOZIR:
-            d["when"] = datetime.now().strftime("%H:%M"); await finalize_and_send(message, d); return
+            d["when"] = datetime.now().strftime("%H:%M")
+            d["stage"] = "confirm"
+            await _ask_confirm(message, d)
+            return
         if text == BOSHQA:
             d["stage"] = "when_input"
             await message.answer("⏰ Vaqtni kiriting (`HH:MM`, masalan: `19:00`):", reply_markup=keyboard_with_back_cancel([], show_back=True)); return
         if is_hhmm(text):
-            d["when"] = normalize_hhmm(text); await finalize_and_send(message, d); return
+            d["when"] = normalize_hhmm(text)
+            d["stage"] = "confirm"
+            await _ask_confirm(message, d)
+            return
         await message.answer("❗️ Vaqt formati `HH:MM` bo‘lishi kerak. Yoki tugmalarni tanlang.", reply_markup=when_keyboard()); return
 
     if stage == "when_input":
         if is_hhmm(text):
-            d["when"] = normalize_hhmm(text); await finalize_and_send(message, d); return
+            d["when"] = normalize_hhmm(text)
+            d["stage"] = "confirm"
+            await _ask_confirm(message, d)
+            return
         await message.answer("❗️ Noto‘g‘ri format. `HH:MM` yozing (masalan: `19:00`).", reply_markup=keyboard_with_back_cancel([], show_back=True)); return
 
 # ================== YORDAMCHI (buyurtma) ==================
@@ -1010,6 +1025,29 @@ def group_post_text(customer_id: int, order: dict, status_note: str | None = Non
     if status_note: base += f"\n{status_note}"
     return base
 
+# ================== ✅ TASDIQLASH EKRANI (YANGI) ==================
+def _order_summary_text(uid: int, d: dict) -> str:
+    route_type = _route_label(d)
+    return (
+        "📝 Buyurtmangizni tekshirib oling:\n"
+        f"🚚 Mashina: {d['vehicle']}\n"
+        f"🧭 Yo'nalish turi: {route_type}\n"
+        f"➡️ Yo‘nalish:\n"
+        f"   • Qayerdan: {d['from']}\n"
+        f"   • Qayerga: {d['to']}\n"
+        f"🕒 Vaqt: {d['when']}\n\n"
+        "Agar hammasi to‘g‘ri bo‘lsa, quyidagi tugmani bosing."
+    )
+
+async def _ask_confirm(message: types.Message, d: dict):
+    uid = message.from_user.id
+    ikb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"confirm_{uid}")],
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"cancel_{uid}")]
+    ])
+    await message.answer(_order_summary_text(uid, d), reply_markup=ikb)
+
+# ================== Vaqt eslatmalar (haydovchi) ==================
 def _event_dt_today_or_now(hhmm: str, now: datetime | None = None) -> datetime:
     now = now or datetime.now()
     try:
@@ -1083,6 +1121,31 @@ async def finalize_and_send(message: types.Message, d: dict):
     await message.answer("✅ Buyurtma haydovchilarga yuborildi.\nKerak bo‘lsa bekor qilishingiz mumkin.", reply_markup=ikb_cust)
     await message.answer("Asosiy menyu", reply_markup=order_keyboard())
     drafts.pop(uid, None)
+
+# ================== ✅ “Tasdiqlash” tugmasi handleri (YANGI) ==================
+@dp.callback_query(F.data.startswith("confirm_"))
+async def confirm_my_order(callback: types.CallbackQuery):
+    try:
+        cust_id = int(callback.data.split("_")[1])
+    except Exception:
+        await callback.answer("Xato ID.", show_alert=True); return
+
+    uid = callback.from_user.id
+    if uid != cust_id:
+        await callback.answer("Bu buyurtmani tasdiqlashga ruxsat yo‘q.", show_alert=True); return
+
+    d = drafts.get(uid)
+    if not d or d.get("stage") != "confirm":
+        await callback.answer("Tasdiqlash uchun ma’lumot topilmadi.", show_alert=True); return
+
+    # Inline tugmalarni olib tashlash (ixtiyoriy)
+    try:
+        await bot.edit_message_reply_markup(chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=None)
+    except Exception:
+        pass
+
+    await finalize_and_send(callback.message, d)
+    await callback.answer("Tasdiqlandi.")
 
 # ================== QABUL / YAKUN / BAHO / BEKOR ==================
 @dp.callback_query(F.data.startswith("accept_"))
