@@ -15,10 +15,13 @@ from aiogram.filters import Command, CommandStart
 import asyncio
 from datetime import datetime, timedelta, time as dtime
 import os
+import json
+from typing import Any
+import csv
 
 # ================== SOZLAMALAR ==================
-TOKEN = "8305786670:AAGRSdnNoDdG6o5wPKXrv-JD2RmfqJ2hHXE"    # BotFather token
-DRIVERS_CHAT_ID  = -1002978372872         # Haydovchilar guruhi ID (buyurtmalar)
+TOKEN = "7630542758:AAGmOSp8DFssGpqND9AtyoLABFUq1TWlncA"    # BotFather token
+DRIVERS_CHAT_ID  = -4972798906         # Haydovchilar guruhi ID (buyurtmalar)
 RATINGS_CHAT_ID  = -4861064259         # 📊 Baholar log guruhi
 PAYMENTS_CHAT_ID = -4925556700         # 💳 Cheklar guruhi
 
@@ -39,8 +42,56 @@ CONTACT_IMAGE_PATH = os.path.join(ASSETS_DIR, "EltiBer.png")
 ESLATMA_IMAGE_PATH = os.path.join(ASSETS_DIR, "ESLATMA.png")
 CONTACT_IMAGE_URL  = ""   # xohlasa zahira URL
 
+# ======= PERSISTENCE (user_profiles -> JSON) =======
+DATA_DIR = os.path.join(BASE_DIR, "data")
+USERS_JSON = os.path.join(DATA_DIR, "users.json")
+STORE_LOCK = asyncio.Lock()
+
+def _ensure_data_dir():
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+    except Exception:
+        pass
+
+def _load_json(path: str, default: Any):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+async def _save_json(path: str, data: Any):
+    _ensure_data_dir()
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+
+def load_users_from_disk() -> dict:
+    raw = _load_json(USERS_JSON, {})
+    fixed = {}
+    # JSON kalitlari string bo'lib keladi -> int'ga aylantiramiz
+    for k, v in (raw or {}).items():
+        try:
+            ik = int(k)
+        except (ValueError, TypeError):
+            ik = k
+        fixed[ik] = v
+    return fixed
+
+async def save_users_to_disk(users: dict):
+    async with STORE_LOCK:
+        # Diskka yozishda kalitlarni string ko'rinishida saqlash — normal
+        await _save_json(USERS_JSON, {str(k): v for k, v in (users or {}).items()})
+
 # ================== XOTIRA (RAM) ==================
-user_profiles = {}   # {uid: {"name":..., "phone":...}}
+user_profiles = load_users_from_disk()
 drafts = {}          # {customer_id: {...}}
 driver_onboarding = {}  # {uid: {"stage":..., "name":..., "car_make":..., "car_plate":..., "phone":...}}
 orders = {}             # {customer_id: {...}}
@@ -156,15 +207,22 @@ async def start_command(message: types.Message):
     else:
         await message.answer("Quyidagi menyudan tanlang 👇", reply_markup=order_keyboard())
 
+# ✅ Bitta handler yetadi (oldin 2 marta yozilgan edi)
 @dp.message(F.contact)
 async def contact_received(message: types.Message):
     uid = message.from_user.id
-    phone = message.contact.phone_number
+    raw_phone = message.contact.phone_number or ""
+    phone = raw_phone if raw_phone.startswith("+") else f"+{raw_phone}"
+
     user_profiles[uid] = {"name": message.from_user.full_name, "phone": phone}
+    await save_users_to_disk(user_profiles)
+
+    # Onboardingning phone bosqichida bo'lsa — driver_onboarding ichiga ham yozib qo'yamiz
     if uid in driver_onboarding and driver_onboarding[uid].get("stage") == "phone":
-        driver_onboarding[uid]["phone"] = phone if phone.startswith("+") else f"+{phone}"
+        driver_onboarding[uid]["phone"] = phone
         await after_phone_collected(uid, message)
         return
+
     await message.answer("✅ Telefon raqamingiz saqlandi.", reply_markup=types.ReplyKeyboardRemove())
     await message.answer("Endi quyidagi menyudan tanlang 👇", reply_markup=order_keyboard())
 
@@ -389,7 +447,7 @@ async def trial_watcher():
                         "Tasdiqlangach, sizga <b>Haydovchilar guruhi</b>ga qayta qo‘shilish havolasini yuboramiz."
                     )
 
-                    # Inline tugmalar: karta nusxalash (agar qo'llasa) va "Chekni yuborish"
+                    # Inline tugmalar
                     if SUPPORTS_COPY_TEXT:
                         ikb = InlineKeyboardMarkup(inline_keyboard=[
                             [InlineKeyboardButton(
@@ -429,12 +487,14 @@ async def after_phone_collected(uid: int, message: types.Message):
     phone = data.get("phone", "—")
 
     if uid in user_profiles:
-        user_profiles[uid]["phone"] = phone
+        user_profiles[uid]["phone"] = phone if phone and phone != "—" else user_profiles[uid].get("phone")
         user_profiles[uid]["name"] = user_profiles[uid].get("name") or name
     else:
         user_profiles[uid] = {"name": name, "phone": phone}
+    # ✅ har doim saqlaymiz
+    await save_users_to_disk(user_profiles)
 
-    # >>> Trial yoqilgan bo‘lsa — darhol 7 kunlik havola yuboramiz (mavjud oqimni o‘chirmasdan).
+    # >>> Trial yoqilgan bo‘lsa — 7 kunlik havola yuboramiz
     if FREE_TRIAL_ENABLED and not subscriptions.get(uid, {}).get("active"):
         try:
             await message.answer(
@@ -448,7 +508,7 @@ async def after_phone_collected(uid: int, message: types.Message):
         driver_onboarding.pop(uid, None)
         return
 
-    # ======== Quyidagisi — sizning asl to‘lov oqimingiz (o‘zgartirilmagan) ========
+    # ======== Asl to‘lov oqimi ========
     price_txt = f"{SUBSCRIPTION_PRICE:,}".replace(",", " ")
     pay_text = (
         f"💳 <b>Obuna to‘lovi:</b> <code>{price_txt} so‘m</code> (1 oy)\n"
@@ -477,7 +537,7 @@ async def after_phone_collected(uid: int, message: types.Message):
         f"👤 <b>F.I.Sh:</b> {name}\n"
         f"🚗 <b>Avtomobil:</b> {car_make}\n"
         f"🔢 <b>Raqam:</b> {car_plate}\n"
-        f"📞 <b>Telefon:</b> {phone}",
+        f"📞 <b>Telefon:</b> {phone_display(user_profiles.get(uid, {}).get('phone', phone))}",
         parse_mode="HTML"
     )
     await message.answer(pay_text, parse_mode="HTML", reply_markup=ikb)
@@ -706,7 +766,7 @@ async def cb_payment_no(callback: types.CallbackQuery):
 
     await callback.answer("Rad etildi.")
 
-# ================== ADMIN: /tasdiq <user_id> (qo‘lda variant, xohlasangiz qoldiring) ==================
+# ================== ADMIN: /tasdiq <user_id> (qo‘lda variant) ==================
 @dp.message(Command("tasdiq"))
 async def admin_confirm_payment(message: types.Message):
     admin_id = message.from_user.id
@@ -747,7 +807,6 @@ async def admin_confirm_payment(message: types.Message):
             disable_web_page_preview=True
         )
         pending_invites[driver_id] = {"msg_id": dm.message_id, "link": invite_link}
-        # >>> Qo'lda tasdiqlashda ham obunani faollashtiramiz
         subscriptions[driver_id] = {"active": True}
         trial_members.pop(driver_id, None)
         await message.reply(f"✅ Silka yuborildi: <code>{driver_id}</code>", parse_mode="HTML")
@@ -1242,6 +1301,47 @@ async def test_payments_photo_cmd(message: types.Message):
         await message.reply("✅ Rasm cheklar guruhiga yuborildi.")
     except Exception as e:
         await message.reply(f"❌ Rasm yuborilmadi: {e}")
+        
+# ================== ADMIN: FOYDALANUVCHILAR SONI ==================
+@dp.message(Command("users_count"))
+async def users_count_cmd(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    total = len(user_profiles or {})
+    with_phone = sum(1 for _, p in (user_profiles or {}).items() if p.get("phone"))
+    await message.reply(
+        f"👥 Jami foydalanuvchilar: <b>{total}</b>\n"
+        f"📞 Telefon saqlanganlar: <b>{with_phone}</b>",
+        parse_mode="HTML"
+    )
+
+# ================== ADMIN: CSV EXPORT ==================
+@dp.message(Command("export_users"))
+async def export_users_cmd(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    rows = []
+    for uid, prof in (user_profiles or {}).items():
+        rows.append([uid, prof.get("name", ""), prof.get("phone", "")])
+
+    # Fayl nomi (data/ ichida)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = os.path.join(DATA_DIR, f"users_{ts}.csv")
+
+    # Excel uchun utf-8-sig
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["user_id", "name", "phone"])
+        writer.writerows(rows)
+
+    try:
+        await message.answer_document(
+            document=FSInputFile(out_path),
+            caption=f"👥 Foydalanuvchilar ro‘yxati (CSV) — {len(rows)} ta"
+        )
+    except Exception as e:
+        await message.reply(f"❌ CSV yuborilmadi: {e}")
 
 # ================== POLLING ==================
 async def main():
