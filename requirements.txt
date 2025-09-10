@@ -1,1 +1,1 @@
-aiogram>=3.4,<4
+aiogram>=3.4,4
