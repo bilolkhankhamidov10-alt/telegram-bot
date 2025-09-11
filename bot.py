@@ -14,6 +14,7 @@ except Exception:
 from aiogram.filters import Command, CommandStart
 import asyncio
 from datetime import datetime, timedelta, time as dtime
+from zoneinfo import ZoneInfo
 import os
 import json
 from typing import Any
@@ -30,6 +31,9 @@ ADMIN_IDS = [6948926876]
 CARD_NUMBER = "5614682216212664"
 CARD_HOLDER = "BILOL HAMIDOV"
 SUBSCRIPTION_PRICE = 99_000
+
+# Tashkent vaqti
+TZ = ZoneInfo("Asia/Tashkent")
 
 bot = Bot(token=TOKEN)
 dp  = Dispatcher()
@@ -372,7 +376,7 @@ async def _send_trial_invite(uid: int):
     7 kunlik bepul sinov uchun bitta martalik invite yaratadi va haydovchiga yuboradi.
     """
     try:
-        expires_at = datetime.now() + timedelta(days=FREE_TRIAL_DAYS)
+        expires_at = datetime.now(TZ) + timedelta(days=FREE_TRIAL_DAYS)
         invite = await bot.create_chat_invite_link(
             chat_id=DRIVERS_CHAT_ID,
             name=f"trial-{uid}",
@@ -420,7 +424,7 @@ async def trial_watcher():
     """
     while True:
         try:
-            now = datetime.now()
+            now = datetime.now(TZ)
             for uid, info in list(trial_members.items()):
                 # To'lov qilganlar kuzatuvdan chiqariladi
                 if subscriptions.get(uid, {}).get("active"):
@@ -697,7 +701,7 @@ async def _send_driver_invite_and_mark(callback: types.CallbackQuery, driver_id:
     try:
         orig_cap = callback.message.caption or ""
         admin_name = callback.from_user.username or callback.from_user.full_name
-        new_cap = f"{orig_cap}\n\n✅ <b>Tasdiqlandi</b> — {admin_name} • {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        new_cap = f"{orig_cap}\n\n✅ <b>Tasdiqlandi</b> — {admin_name} • {datetime.now(TZ).strftime('%Y-%m-%d %H:%M')}"
         await bot.edit_message_caption(
             chat_id=callback.message.chat.id,
             message_id=callback.message.message_id,
@@ -750,7 +754,7 @@ async def cb_payment_no(callback: types.CallbackQuery):
     try:
         orig_cap = callback.message.caption or ""
         admin_name = callback.from_user.username or callback.from_user.full_name
-        new_cap = f"{orig_cap}\n\n❌ <b>Rad etildi</b> — {admin_name} • {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        new_cap = f"{orig_cap}\n\n❌ <b>Rad etildi</b> — {admin_name} • {datetime.now(TZ).strftime('%Y-%m-%d %H:%M')}"
         await bot.edit_message_caption(
             chat_id=callback.message.chat.id,
             message_id=callback.message.message_id,
@@ -765,53 +769,6 @@ async def cb_payment_no(callback: types.CallbackQuery):
             pass
 
     await callback.answer("Rad etildi.")
-
-# ================== ADMIN: /tasdiq <user_id> (qo‘lda variant) ==================
-@dp.message(Command("tasdiq"))
-async def admin_confirm_payment(message: types.Message):
-    admin_id = message.from_user.id
-    if admin_id not in ADMIN_IDS:
-        return
-
-    parts = (message.text or "").strip().split()
-    if len(parts) < 2 or not parts[1].isdigit():
-        await message.reply("Foydalanish: <code>/tasdiq USER_ID</code>", parse_mode="HTML")
-        return
-
-    driver_id = int(parts[1])
-
-    try:
-        invite = await bot.create_chat_invite_link(
-            chat_id=DRIVERS_CHAT_ID,
-            name=f"driver-{driver_id}",
-            member_limit=1
-        )
-        invite_link = invite.invite_link
-    except Exception:
-        await message.reply("❌ Taklif havolasini yaratib bo‘lmadi. Bot guruhda admin ekanini tekshiring.")
-        return
-
-    ikb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👥 Haydovchilar guruhiga qo‘shilish", url=invite_link)]
-    ])
-    try:
-        dm = await bot.send_message(
-            chat_id=driver_id,
-            text=(
-                "✅ <b>To‘lov tasdiqlandi.</b>\n\n"
-                "Quyidagi tugma orqali <b>Haydovchilar guruhiga</b> qo‘shiling. "
-                "Guruhga qo‘shilgandan so‘ng bu xabar avtomatik o‘chiriladi."
-            ),
-            parse_mode="HTML",
-            reply_markup=ikb,
-            disable_web_page_preview=True
-        )
-        pending_invites[driver_id] = {"msg_id": dm.message_id, "link": invite_link}
-        subscriptions[driver_id] = {"active": True}
-        trial_members.pop(driver_id, None)
-        await message.reply(f"✅ Silka yuborildi: <code>{driver_id}</code>", parse_mode="HTML")
-    except Exception:
-        await message.reply("❌ Haydovchiga DM yuborib bo‘lmadi (botga /start yozmagan bo‘lishi mumkin).")
 
 # ================== CHAT MEMBER UPDATE: guruhga qo‘shilganda DM’ni o‘chirish ==================
 @dp.chat_member()
@@ -956,7 +913,8 @@ async def collect_flow(message: types.Message):
     # ✅ Tasdiqlashga o‘tkazish (Hozir/Boshqa yoki HH:MM kiritilganda)
     if stage == "when_select":
         if text == HOZIR:
-            d["when"] = HOZIR
+            # Asia/Tashkent bo'yicha hozirgi vaqt
+            d["when"] = datetime.now(TZ).strftime("%H:%M")
             d["stage"] = "confirm"
             await _ask_confirm(message, d)
             return
@@ -1043,16 +1001,16 @@ async def _ask_confirm(message: types.Message, d: dict):
     uid = message.from_user.id
     ikb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"confirm_{uid}")],
-        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"cancel_{uid}")]
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"canceldraft_{uid}")]
     ])
     await message.answer(_order_summary_text(uid, d), reply_markup=ikb)
 
 # ================== Vaqt eslatmalar (haydovchi) ==================
 def _event_dt_today_or_now(hhmm: str, now: datetime | None = None) -> datetime:
-    now = now or datetime.now()
+    now = now or datetime.now(TZ)
     try:
         h, m = map(int, hhmm.split(":"))
-        target = datetime.combine(now.date(), dtime(hour=h, minute=m))
+        target = datetime.combine(now.date(), dtime(hour=h, minute=m, tzinfo=TZ))
     except Exception:
         return now
     return target if target > now else now
@@ -1082,7 +1040,7 @@ def schedule_driver_reminders(customer_id: int):
     if not driver_id: return
 
     cancel_driver_reminders(customer_id)
-    now = datetime.now()
+    now = datetime.now(TZ)
     event_dt = _event_dt_today_or_now(order["when"], now=now)
     seconds_to_event = (event_dt - now).total_seconds()
     milestones = [(3600, "⏳ 1 soat qoldi"), (1800, "⏳ 30 daqiqa qoldi"), (900, "⏳ 15 daqiqa qoldi"), (0, "⏰ Vaqti bo‘ldi")]
@@ -1115,14 +1073,15 @@ async def finalize_and_send(message: types.Message, d: dict):
         "driver_id": None, "cust_info_msg_id": None, "drv_info_msg_id": None,
         "cust_rating_msg_id": None, "rating": None, "reminder_tasks": []
     }
+    # Mijozga BEKOR tugmasi — faqat mijoz uchun
     ikb_cust = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Buyurtmani bekor qilish", callback_data=f"cancel_{uid}")]
+        [InlineKeyboardButton(text="❌ Buyurtmani bekor qilish", callback_data=f"cancelcust_{uid}")]
     ])
     await message.answer("✅ Buyurtma haydovchilarga yuborildi.\nKerak bo‘lsa bekor qilishingiz mumkin.", reply_markup=ikb_cust)
     await message.answer("Asosiy menyu", reply_markup=order_keyboard())
     drafts.pop(uid, None)
 
-# ================== ✅ “Tasdiqlash” tugmasi handleri (YANGI) ==================
+# ================== ✅ “Tasdiqlash” tugmasi handleri ==================
 @dp.callback_query(F.data.startswith("confirm_"))
 async def confirm_my_order(callback: types.CallbackQuery):
     try:
@@ -1146,6 +1105,25 @@ async def confirm_my_order(callback: types.CallbackQuery):
 
     await finalize_and_send(callback.message, d)
     await callback.answer("Tasdiqlandi.")
+
+# ================== DRAFT BEKOR QILISH (tasdiqlash ekranidagi) ==================
+@dp.callback_query(F.data.startswith("canceldraft_"))
+async def cancel_draft(callback: types.CallbackQuery):
+    try:
+        customer_id = int(callback.data.split("_")[1])
+    except Exception:
+        await callback.answer("Xato ID.", show_alert=True); return
+
+    if callback.from_user.id != customer_id:
+        await callback.answer("Faqat o‘zingizning buyurtma draftingizni bekor qila olasiz.", show_alert=True); return
+
+    drafts.pop(customer_id, None)
+    try:
+        await bot.edit_message_reply_markup(chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=None)
+    except Exception:
+        pass
+    await bot.send_message(customer_id, "❌ Buyurtma bekor qilindi.")
+    await callback.answer("Bekor qilindi.")
 
 # ================== QABUL / YAKUN / BAHO / BEKOR ==================
 @dp.callback_query(F.data.startswith("accept_"))
@@ -1181,7 +1159,7 @@ async def accept_order(callback: types.CallbackQuery):
     )
     ikb_drv = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Buyurtmani yakunlash", callback_data=f"complete_{customer_id}")],
-        [InlineKeyboardButton(text="❌ Buyurtmani bekor qilish", callback_data=f"cancel_{customer_id}")],
+        [InlineKeyboardButton(text="❌ Buyurtmani bekor qilish", callback_data=f"canceldrv_{driver_id}")],
         [InlineKeyboardButton(text="👤 Mijoz profili", url=f"tg://user?id={customer_id}")]
     ])
     try:
