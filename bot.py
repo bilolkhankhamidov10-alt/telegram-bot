@@ -21,7 +21,7 @@ from typing import Any
 import csv
 
 # ================== SOZLAMALAR ==================
-TOKEN = "8305786670:AAGRSdnNoDdG6o5wPKXrv-JD2RmfqJ2hHXE"    # BotFather token
+TOKEN = "8305786670:AAGRSdnNoDdG6o5wPKXrv-JD2RmfqJ2hHX"    # BotFather token
 DRIVERS_CHAT_ID  = -1002978372872         # Haydovchilar guruhi ID (buyurtmalar)
 RATINGS_CHAT_ID  = -4861064259            # 📊 Baholar log guruhi
 PAYMENTS_CHAT_ID = -4925556700            # 💳 Cheklar guruhi
